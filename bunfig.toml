@@ -1,0 +1,9 @@
+# Isola os testes do banco real.
+#
+# Os primeiros testes de carga rodaram contra data/startpage.sqlite e deixaram
+# registros sintéticos que causaram três bugs em uso: carimbos no futuro
+# (sync travado), nota sem `body` (slide quebrado) e tarefa `[60]` (impossível
+# de apagar). Com o preload abaixo, DB_PATH sempre aponta para um arquivo
+# descartável durante `bun test`.
+[test]
+preload = ["./test-setup.ts"]

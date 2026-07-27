@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+
+    <!--
+      Content-Security-Policy: última linha de defesa contra XSS.
+      Se algum HTML malicioso escapar da sanitização, o navegador ainda
+      recusa executar script inline ou carregar recurso de terceiro.
+      'unsafe-inline' em style é exigido pelo Tailwind/estilos dinâmicos.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline';
+               font-src 'self';
+               img-src 'self' data: blob: https:;
+               connect-src 'self' https://api.todoist.com;
+               frame-ancestors 'none';
+               base-uri 'none';
+               form-action 'none';
+               object-src 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <title>Startpage</title>
+
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="theme-color" content="#1e1e2e" />
+
+    <!-- fontes críticas: evita flash de texto sem estilo no boot -->
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin-400.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin-600.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="/fonts/SymbolsNerdFont-Subset.woff2" crossorigin />
+
+    <!-- a primeira chamada ao Todoist fica mais rápida -->
+    <link rel="dns-prefetch" href="https://api.todoist.com" />
+    <link rel="preconnect" href="https://api.todoist.com" crossorigin />
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <noscript>
+      <div style="
+        max-width:34rem;margin:18vh auto;padding:1.5rem;
+        font-family:system-ui,sans-serif;color:#cdd6f4;
+        background:#181825;border:1px solid #313244;border-radius:14px;line-height:1.6">
+        <h1 style="margin:0 0 .5rem;font-size:1.1rem;color:#cba6f7">JavaScript desativado</h1>
+        <p style="margin:0;color:#a6adc8;font-size:.9rem">
+          Esta startpage precisa de JavaScript para o relógio, o Pomodoro e suas anotações.
+          Ative-o para este site — todos os seus dados continuam salvos localmente.
+        </p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

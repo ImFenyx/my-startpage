@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": true,
+    "types": [
+      "bun-types"
+    ],
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "server",
+    "scripts",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ]
+}

@@ -1,0 +1,39 @@
+# dependências e build
+node_modules/
+dist/
+
+# logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# banco de dados local — contém SUAS notas, wishlist e links
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# segredos e configuração de ambiente
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.netrc
+
+# backups gerados pelo app
+startpage-backup-*.json
+
+# editores e sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# cache de ferramentas
+.cache/
+.turbo/
+coverage/
+*.tsbuildinfo
