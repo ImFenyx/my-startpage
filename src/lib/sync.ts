@@ -67,7 +67,7 @@ const MAX_SKEW = 5 * 60_000
 function sane(at: number): number {
   const now = Date.now()
   if (!Number.isFinite(at) || at <= 0) return now
-  return at > now + MAX_SKEW ? now + MAX_SKEW : at
+  return at > now + MAX_SKEW ? now : at
 }
 
 /** Timestamp local da última alteração de cada chave. */
