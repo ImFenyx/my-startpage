@@ -127,15 +127,17 @@ export async function pull(): Promise<string[]> {
 
     for (const e of entries) {
       if (!isSyncable(e.key)) continue
+      const localRaw = localStorage.getItem(`startpage:${e.key}`)
       const mine = localStamp(e.key)
+      const now = Date.now()
+      const skewedFuture = Number.isFinite(e.updatedAt) && e.updatedAt > now + MAX_SKEW
       const theirs = sane(e.updatedAt)
-      if (theirs > mine) {
+      if (theirs > mine && !(skewedFuture && localRaw !== null)) {
         localStorage.setItem(`startpage:${e.key}`, JSON.stringify(e.value))
         touch(e.key, theirs)
         updated.push(e.key)
-      } else if (mine > theirs) {
-        const raw = localStorage.getItem(`startpage:${e.key}`)
-        if (raw) toPush.push({ key: e.key, value: JSON.parse(raw), updatedAt: mine })
+      } else if (mine > theirs || (skewedFuture && localRaw !== null)) {
+        if (localRaw) toPush.push({ key: e.key, value: JSON.parse(localRaw), updatedAt: mine })
       }
     }
 
