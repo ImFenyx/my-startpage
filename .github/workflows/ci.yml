@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verificar:
+    name: Typecheck, testes e build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Instalar dependências
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck (app)
+        run: bunx tsc --noEmit -p tsconfig.json
+
+      - name: Testes
+        run: bun test
+
+      - name: Build de produção
+        run: bunx --bun vite build
+
+      - name: Auditoria de dependências
+        run: bun audit
+        continue-on-error: true
