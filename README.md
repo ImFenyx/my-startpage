@@ -1,6 +1,6 @@
 # 󰋜 Startpage — Catppuccin Mocha · TDAH-friendly
 
-![CI](https://github.com/SEU-USUARIO/startpage/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/ImFenyx/my-startpage/actions/workflows/ci.yml/badge.svg)
 ![Bun](https://img.shields.io/badge/Bun-1.3-black?logo=bun)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react)
 ![Testes](https://img.shields.io/badge/testes-206-green)
