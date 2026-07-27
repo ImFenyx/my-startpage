@@ -84,6 +84,8 @@ function QuickLinks() {
             <a
               key={l.id}
               href={safeHref(l.url)}
+              target="_blank"
+              rel="noopener noreferrer"
               className="group flex min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-transparent px-1 py-2 text-center transition-all hover:border-mauve/40 hover:bg-surface0/70"
               title={`${l.label} — ${l.url}`}
             >
