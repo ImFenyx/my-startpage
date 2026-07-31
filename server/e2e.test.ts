@@ -38,7 +38,9 @@ beforeAll(async () => {
 
   proc = Bun.spawn(['bun', 'run', 'server/index.ts'], {
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, PORT: String(PORT), DB_PATH: DB },
+    // agendador desligado: o boot não deve disparar rede; o gatilho manual
+    // (POST /api/wishlist/refresh) continua disponível e é testado abaixo
+    env: { ...process.env, PORT: String(PORT), DB_PATH: DB, WISHLIST_REFRESH_HOURS: '0' },
     stdout: 'pipe',
     stderr: 'pipe',
   })
@@ -73,6 +75,10 @@ test('health responde com runtime e estatísticas', async () => {
   expect(body.ok).toBe(true)
   expect(body.runtime).toContain('bun')
   expect(body.db).toHaveProperty('keys')
+  // painel do vigia de preços (wishlist): rodando? qual a cadência?
+  expect(body.wishlistPrices).toHaveProperty('running')
+  expect(typeof body.wishlistPrices.intervalHours).toBe('number')
+  expect(body.wishlistPrices.running).toBe(false)
 })
 
 test('rota inexistente devolve 404 sem stack trace', async () => {
@@ -256,6 +262,36 @@ test('diagnóstico lista as chaves e sinaliza datas futuras', async () => {
 test('proxy exige Authorization', async () => {
   const { status } = await j(await fetch(`${BASE}/api/todoist/user`))
   expect(status).toBe(401)
+})
+
+/* ─── gatilho manual do vigia de preços ──────────────────────── */
+
+test('POST /api/wishlist/refresh dispara uma rodada e o health acompanha', async () => {
+  // garante wishlist sem itens elegíveis (o teste de lote deixou [49])
+  await fetch(`${BASE}/api/sync/wishlist:items`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: [], updatedAt: Date.now() }),
+  })
+
+  const { status, body } = await j(await fetch(`${BASE}/api/wishlist/refresh`, { method: 'POST' }))
+  expect(status).toBe(202)
+  expect(body.started).toBe(true)
+
+  // sem itens com URL a rodada termina quase na hora — sem rede envolvida
+  for (let i = 0; i < 30; i++) {
+    const h = await j(await fetch(`${BASE}/api/health`))
+    if (!h.body.wishlistPrices.running) return
+    await Bun.sleep(100)
+  }
+  throw new Error('rodada de preços não terminou')
+})
+
+test('gatilho manual é rate-limited (2 a cada 5 min)', async () => {
+  await j(await fetch(`${BASE}/api/wishlist/refresh`, { method: 'POST' })) // 2ª da janela
+  const terceira = await j(await fetch(`${BASE}/api/wishlist/refresh`, { method: 'POST' }))
+  expect(terceira.status).toBe(429)
+  expect(terceira.body.error).toMatch(/muitas requisições/i)
 })
 
 test('proxy recusa caminho com traversal', async () => {

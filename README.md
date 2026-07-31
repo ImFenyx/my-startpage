@@ -3,7 +3,7 @@
 ![CI](https://github.com/ImFenyx/my-startpage/actions/workflows/ci.yml/badge.svg)
 ![Bun](https://img.shields.io/badge/Bun-1.3-black?logo=bun)
 ![React](https://img.shields.io/badge/React-19-149eca?logo=react)
-![Testes](https://img.shields.io/badge/testes-206-green)
+![Testes](https://img.shields.io/badge/testes-230-green)
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-MIT-blue)
 
 Painel inicial com relógio, Pomodoro, links rápidos, tarefas do Todoist,
@@ -135,6 +135,8 @@ O token vai em `localStorage` (`startpage:todoist_token`) e a chamada é client-
 
 > ⚠️ **Limite honesto do scraping:** Mercado Livre, Amazon, AliExpress e Shopee usam proteção anti-bot (Akamai/Cloudflare/PerimeterX) que bloqueia qualquer requisição HTTP simples, por mais bem formados que sejam os cabeçalhos. Isso **não é contornável** com `fetch` — exigiria navegador headless (Playwright) com IP residencial, ou as APIs oficiais de afiliado (todas com OAuth). O scraper funciona bem em lojas menores e sites com JSON-LD; para os grandes marketplaces, o app agora avisa claramente e você preenche preço e imagem à mão (upload ou URL).
 
+**Vigia de preços (automático).** Com o backend no ar, os preços dos itens abertos que têm link são re-verificados sozinhos **2× por semana** (a cada 84 h; `WISHLIST_REFRESH_HOURS` muda o ciclo, `0` desliga). O vigia (`server/price-watch.ts`) lê a cópia da wishlist no SQLite de sync, raspa um item por vez com pausa entre lojas e grava o preço novo + carimbo `priceUpdatedAt` — o front puxa na reconciliação periódica (5 min) e exibe "há X d" ao lado do preço. Regras de segurança da rodada: fora de estoque **mantém** o último preço; loja bloqueada/sem preço vira `failed` no relatório (visível em `/api/health`); se TUDO falhar, a próxima tentativa sai em 8 h em vez de esperar o ciclo; e se você editar a lista no meio de uma rodada, os preços são mesclados por id na versão mais nova — nada é sobrescrito. O botão **Preços** no cabeçalho da wishlist (`POST /api/wishlist/refresh`) dispara uma rodada na hora.
+
 **3 · Bloco de Notas** — textarea com **markdown** (marked + DOMPurify), preview `Ctrl+E`, autosave debounced com indicador de status, contador de palavras, export `.md` e **blocos salvos anteriormente** na régua inferior (título + data, duplo-clique exclui), exatamente como no wireframe.
 
 ## Acessibilidade
@@ -249,7 +251,7 @@ Complementos: allowlist de chaves no sync, teto de 1 MB por valor, 5 MB no corpo
 
 ## Testes
 
-**206 testes** em 20 arquivos, executados com `bun test`. Três execuções seguidas produzem resultado idêntico (sem flakiness).
+**230 testes** em 22 arquivos, executados com `bun test`. Três execuções seguidas produzem resultado idêntico (sem flakiness).
 
 | Camada | Cobertura |
 | --- | --- |

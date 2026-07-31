@@ -43,6 +43,8 @@ export type WishItem = {
   done: boolean
   createdAt: number
   note?: string
+  /** Última confirmação do preço por scraping (vigia do servidor ou manual). */
+  priceUpdatedAt?: number
 }
 
 export type Note = {

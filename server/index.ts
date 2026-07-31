@@ -6,6 +6,7 @@
  * Rotas:
  *   GET    /api/health
  *   GET    /api/scrape?url=…          metadados de produto (wishlist)
+ *   POST   /api/wishlist/refresh      dispara o vigia de preços agora (rodada manual)
  *   GET    /api/img?url=…             proxy de imagem (hotlink/CORS)
  *   ALL    /api/todoist/*             proxy da Unified API v1 (fallback anti-adblock)
  *   GET    /api/sync                  todos os dados persistidos
@@ -20,22 +21,18 @@
  */
 import { Elysia, t } from 'elysia'
 import { cors } from '@elysiajs/cors'
-import * as cheerio from 'cheerio'
+import { scrapeProduct, ScrapeError, UA } from './scrape-product'
+import type { Scraped } from './scrape-product'
 import {
-  abs,
-  parsePrice,
-  CURRENCY_RE,
-  CURRENCY_SYMBOL,
-  fromJsonLd,
-  detectBlock,
-  pickImage,
-} from './scrape-lib'
+  DEFAULT_INTERVAL_MS,
+  refreshWishlistPrices,
+  type RefreshReport,
+} from './price-watch'
 import * as store from './db'
 import {
   ALLOWED_ORIGINS,
   checkPublicUrl,
   createRateLimiter,
-  readCapped,
   safeFetch,
   SAFE_IMAGE_TYPES,
   SECURITY_HEADERS,
@@ -44,43 +41,57 @@ import {
 const PORT = Number(Bun.env.PORT ?? 8787)
 const TTL = 1000 * 60 * 30 // cache de scrape: 30 min
 
-const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-
-/** Cabeçalhos de navegador real — algumas lojas recusam requisições "cruas". */
-const BROWSER_HEADERS: Record<string, string> = {
-  'user-agent': UA,
-  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-  'upgrade-insecure-requests': '1',
-  'sec-fetch-dest': 'document',
-  'sec-fetch-mode': 'navigate',
-  'sec-fetch-site': 'none',
-  'sec-fetch-user': '?1',
-  'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
-  'sec-ch-ua-mobile': '?0',
-  'sec-ch-ua-platform': '"Windows"',
-  'cache-control': 'max-age=0',
-}
-
-type Scraped = {
-  url: string
-  title: string
-  image: string
-  price: string
-  currency: string
-  siteName: string
-  favicon: string
-  inStock: boolean
-  blocked: boolean
-  warnings: string[]
-}
-
 const cache = new Map<string, { at: number; data: Scraped }>()
 
 // limites por IP: scraping é caro, sync é barato
 const limitScrape = createRateLimiter(30, 60_000) // 30/min
 const limitSync = createRateLimiter(600, 60_000) // 600/min
+const limitRefresh = createRateLimiter(2, 5 * 60_000) // gatilho manual: 2 a cada 5 min
+
+/* ──────────────── VIGIA DE PREÇOS DA WISHLIST ──────────────── */
+
+/**
+ * Atualiza os preços dos itens com URL direto no SQLite de sync; o front
+ * puxa na próxima reconciliação. Cadência padrão: 2× por semana (84 h).
+ *
+ *   WISHLIST_REFRESH_HOURS=168   uma vez por semana
+ *   WISHLIST_REFRESH_HOURS=0     desliga o agendador (o gatilho manual
+ *                                POST /api/wishlist/refresh continua valendo)
+ */
+const parsedRefreshHours = Number(Bun.env.WISHLIST_REFRESH_HOURS ?? DEFAULT_INTERVAL_MS / 3_600_000)
+const REFRESH_HOURS =
+  Number.isFinite(parsedRefreshHours) && parsedRefreshHours >= 0
+    ? parsedRefreshHours
+    : DEFAULT_INTERVAL_MS / 3_600_000
+let refreshRunning = false
+let lastRefresh: RefreshReport | null = null
+
+async function runPriceRefresh(force: boolean): Promise<void> {
+  if (refreshRunning) return
+  refreshRunning = true
+  try {
+    const res = await refreshWishlistPrices({
+      store,
+      scrape: scrapeProduct,
+      force,
+      intervalMs: REFRESH_HOURS * 3_600_000,
+      log: (m) => console.warn(`  [preços] ${m}`),
+    })
+    if (res.ran) {
+      lastRefresh = res.report
+      const r = res.report
+      console.log(
+        `  [preços] ${r.updated}/${r.checked} preços atualizados` +
+          (r.outOfStock ? ` · ${r.outOfStock} fora de estoque` : '') +
+          (r.failed.length ? ` · falhas: ${r.failed.join(', ')}` : ''),
+      )
+    }
+  } catch (e) {
+    console.warn('  [preços] rodada abortada:', (e as Error)?.message ?? e)
+  } finally {
+    refreshRunning = false
+  }
+}
 
 const app = new Elysia()
   .use(
@@ -120,6 +131,12 @@ const app = new Elysia()
     runtime: `bun ${Bun.version}`,
     cache: cache.size,
     db: store.stats(),
+    // o front consulta isto para acompanhar uma rodada manual de preços
+    wishlistPrices: {
+      running: refreshRunning,
+      intervalHours: REFRESH_HOURS,
+      last: lastRefresh,
+    },
   }))
 
   /* ───────────────────────── SCRAPE ───────────────────────── */
@@ -137,13 +154,6 @@ const app = new Elysia()
 
       const target = query.url.trim()
 
-      // bloqueia SSRF: localhost, redes privadas, metadata de cloud
-      const check = await checkPublicUrl(target)
-      if (!check.ok) {
-        set.status = 400
-        return { error: check.reason }
-      }
-
       const hit = cache.get(target)
       if (hit && Date.now() - hit.at < TTL) {
         // LRU de verdade: reinsere para marcar como recém-usado
@@ -153,128 +163,45 @@ const app = new Elysia()
       }
       if (hit) cache.delete(target) // expirado
 
-      // safeFetch revalida CADA redirect — sem isso, uma página pública pode
-      // devolver 302 para 127.0.0.1 e contornar o filtro de SSRF.
-      const res = await safeFetch(check.url, {
-        headers: BROWSER_HEADERS,
-        signal: AbortSignal.timeout(15_000),
-      })
-      if (!res.ok) {
-        set.status = 502
-        return { error: `A loja respondeu HTTP ${res.status}`, detail: res.statusText }
-      }
-
-      // rejeita não-HTML e corpos gigantes antes de parsear
-      const ctype = res.headers.get('content-type') ?? ''
-      if (!/text\/html|application\/xhtml/i.test(ctype)) {
-        set.status = 415
-        return { error: `A URL não retornou HTML (${ctype.split(';')[0] || 'desconhecido'}).` }
-      }
-
-      const html = await readCapped(res)
-      const $ = cheerio.load(html)
-      const meta = (sel: string, attr = 'content') => $(sel).first().attr(attr)
-      const host = check.url.hostname
-
-      const blocked = detectBlock($, html, host)
-      const ld = fromJsonLd($)
-
-      const title =
-        ld.title ||
-        meta('meta[property="og:title"]') ||
-        meta('meta[name="twitter:title"]') ||
-        $('#productTitle').first().text().trim() ||
-        $('h1').first().text().trim() ||
-        $('title').text().trim()
-
-      const image = pickImage($, ld.image, target)
-
-      const outOfStockText =
-        /(indisponível|esgotado|fora de estoque|sem estoque|out of stock|currently unavailable|no disponible)/i
-      const bodyText = $('#availability, #outOfStock, [class*="availability" i], [class*="stock" i]')
-        .first()
-        .text()
-      const inStock = ld.inStock ?? !(outOfStockText.test(bodyText) || outOfStockText.test(title))
-
-      let rawPrice: unknown =
-        ld.rawPrice ??
-        meta('meta[property="product:price:amount"]') ??
-        meta('meta[property="og:price:amount"]') ??
-        meta('meta[itemprop="price"]') ??
-        $('[itemprop="price"]').first().attr('content')
-
-      if (rawPrice == null && inStock && !blocked) {
-        const SPECIFIC = [
-          '.a-price[data-a-color="base"] .a-offscreen',
-          '#corePrice_feature_div .a-offscreen',
-          '#priceblock_ourprice, #priceblock_dealprice',
-          '.andes-money-amount__fraction',
-          '[data-testid="price-part"] .andes-money-amount__fraction',
-          '.product-price-value',
-          '.pdp-comp-price-current .product-price-value',
-          '.price--currentPriceText--V8_y_b5',
-          '.product-price',
-          '[data-testid="price"], [data-test="price"]',
-          '[itemprop="price"]',
-        ]
-        for (const sel of SPECIFIC) {
-          const el = $(sel).filter((_, e) => /\d/.test($(e).text())).first()
-          if (el.length) {
-            const txt = el.text().trim()
-            if (txt) {
-              rawPrice = txt
-              break
-            }
-          }
+      try {
+        const data = await scrapeProduct(target)
+        cache.set(target, { at: Date.now(), data })
+        if (cache.size > 300) cache.delete(cache.keys().next().value!)
+        return data
+      } catch (e) {
+        if (e instanceof ScrapeError) {
+          set.status = e.status
+          return e.detail ? { error: e.message, detail: e.detail } : { error: e.message }
         }
+        throw e // inesperado: cai no onError (502 genérico)
       }
-
-      if (rawPrice == null && inStock && !blocked) {
-        const el = $('[class*="price" i], [id*="price" i], [data-testid*="price" i]')
-          .filter((_, e) => {
-            const tx = $(e).text()
-            return /\d/.test(tx) && CURRENCY_RE.test(tx) && tx.length < 60
-          })
-          .first()
-        if (el.length) rawPrice = el.text().trim()
-      }
-
-      const rawCurrency =
-        ld.currency ||
-        meta('meta[property="product:price:currency"]') ||
-        meta('meta[property="og:price:currency"]') ||
-        meta('meta[itemprop="priceCurrency"]')
-
-      const parsed = inStock ? parsePrice(rawPrice) : null
-
-      const warnings: string[] = []
-      if (blocked) warnings.push(blocked)
-      if (!inStock) warnings.push('Produto indisponível — preço não capturado.')
-      if (!parsed && inStock && !blocked) warnings.push('Preço não encontrado nesta página.')
-      if (!image && !blocked) warnings.push('Imagem não encontrada.')
-
-      const data: Scraped = {
-        url: target,
-        title: (title ?? '').replace(/\s+/g, ' ').trim().slice(0, 140),
-        image,
-        price: parsed?.price ?? '',
-        currency:
-          CURRENCY_SYMBOL[String(rawCurrency ?? '').toUpperCase()] ||
-          parsed?.currency ||
-          (/\.br$/i.test(host) ? 'R$' : ''),
-        siteName: meta('meta[property="og:site_name"]') || host.replace(/^www\./, ''),
-        favicon: `https://www.google.com/s2/favicons?sz=64&domain=${host}`,
-        inStock,
-        blocked: Boolean(blocked),
-        warnings,
-      }
-
-      cache.set(target, { at: Date.now(), data })
-      if (cache.size > 300) cache.delete(cache.keys().next().value!)
-      return data
     },
     { query: t.Object({ url: t.String({ maxLength: 2048 }) }) },
   )
+
+  /* ─────────── GATILHO MANUAL DO VIGIA DE PREÇOS ─────────── */
+
+  /**
+   * Roda a atualização de preços em segundo plano e responde 202 na hora —
+   * uma rodada com 20 itens leva minutos. O front acompanha o progresso
+   * pelo campo `wishlistPrices` do /api/health e puxa o sync ao final.
+   */
+  .post('/api/wishlist/refresh', ({ set, server, request }) => {
+    const ip = server?.requestIP(request)?.address ?? 'local'
+    const rl = limitRefresh(ip)
+    if (!rl.ok) {
+      set.status = 429
+      set.headers['retry-after'] = String(rl.retryAfter)
+      return { error: `Muitas requisições. Tente em ${rl.retryAfter}s.` }
+    }
+    if (refreshRunning) {
+      set.status = 409
+      return { error: 'Uma atualização de preços já está em andamento.' }
+    }
+    void runPriceRefresh(true)
+    set.status = 202
+    return { started: true }
+  })
 
   /* ────────────────────── PROXY DE IMAGEM ────────────────────── */
 
@@ -505,6 +432,18 @@ const app = new Elysia()
  * `unref()` para não segurar o processo aberto.
  */
 setInterval(() => store.maintenance(), 10 * 60_000).unref()
+
+/**
+ * Agendador do vigia de preços. Padrão "verifica e roda" em vez de agendar
+ * o horário exato: sobrevive a suspensão do processo e ao --watch. A
+ * primeira verificação sai 12 s após o boot para não competir com a subida
+ * do servidor — se a última rodada já venceu, atualiza na hora.
+ */
+if (Number.isFinite(REFRESH_HOURS) && REFRESH_HOURS > 0) {
+  const tick = () => void runPriceRefresh(false)
+  setTimeout(tick, 12_000).unref()
+  setInterval(tick, 30 * 60_000).unref()
+}
 
 // Conserta carimbos no futuro deixados por relógio errado ou dados de teste.
 const reparados = store.repairFutureStamps()

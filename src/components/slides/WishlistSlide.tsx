@@ -1,9 +1,11 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from '../Icon'
 import Modal from '../Modal'
 import { usePersistentState, uid } from '../../lib/storage'
 import { DEFAULT_WISHLIST, WISH_CATEGORIES } from '../../lib/defaults'
 import { safeHref, safeImageSrc } from '../../lib/safe-url'
+import { timeAgo } from '../../lib/time-ago'
+import * as sync from '../../lib/sync'
 import type { WishItem } from '../../lib/types'
 
 const PRIO: Record<WishItem['priority'], string> = {
@@ -41,7 +43,64 @@ export default function WishlistSlide() {
   const [scraping, setScraping] = useState(false)
   const [scrapeMsg, setScrapeMsg] = useState('')
   const [scrapeOk, setScrapeOk] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshNote, setRefreshNote] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // aviso do gatilho manual some sozinho — não vira poluição visual
+  useEffect(() => {
+    if (!refreshNote) return
+    const t = window.setTimeout(() => setRefreshNote(''), 9_000)
+    return () => window.clearTimeout(t)
+  }, [refreshNote])
+
+  /**
+   * Gatilho manual do vigia de preços: o servidor roda a rodada em segundo
+   * plano; acompanhamos pelo /api/health e puxamos o sync ao final.
+   * (O servidor já atualiza sozinho 2× por semana — isto é só o "agora".)
+   */
+  const refreshPrices = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    setRefreshNote('')
+    try {
+      const r = await fetch('/api/wishlist/refresh', { method: 'POST' })
+      if (r.status === 404) {
+        setRefreshNote('Seu backend é antigo e não tem o vigia de preços — atualize o servidor.')
+        return
+      }
+      if (!r.ok) {
+        const d = await r.json().catch(() => null)
+        setRefreshNote(d?.error ?? `Falhou (HTTP ${r.status}).`)
+        return
+      }
+      // até ~2 min acompanhando; cada item leva alguns segundos no servidor
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r2) => window.setTimeout(r2, 2_000))
+        const h = await fetch('/api/health')
+          .then((x) => x.json())
+          .catch(() => null)
+        if (!h) break // backend caiu no meio do caminho
+        if (!h.wishlistPrices?.running) {
+          const last = h.wishlistPrices?.last
+          setRefreshNote(
+            last?.checked
+              ? `${last.updated}/${last.checked} preços atualizados`
+              : 'Nada para atualizar — nenhum item aberto com link.',
+          )
+          const updated = await sync.pull()
+          if (updated.length) {
+            window.dispatchEvent(new CustomEvent('startpage:pulled', { detail: updated }))
+          }
+          break
+        }
+      }
+    } catch {
+      setRefreshNote('Backend offline — os preços continuam como estão.')
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const cats = useMemo(() => ['Todos', ...WISH_CATEGORIES], [])
   const list = items.filter((i) => filter === 'Todos' || i.category === filter)
@@ -75,6 +134,8 @@ export default function WishlistSlide() {
               image: d.image && !d.blocked ? `/api/img?url=${encodeURIComponent(d.image)}` : e.image,
               price: d.price ? Number(d.price).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : e.price,
               currency: d.currency || e.currency,
+              // preço recém-confirmado pelo scrape manual também ganha carimbo
+              ...(d.price ? { priceUpdatedAt: Date.now() } : {}),
             }
           : e,
       )
@@ -110,8 +171,22 @@ export default function WishlistSlide() {
             R$ {total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
           </span>
         )}
+        {refreshNote ? (
+          <span className="max-w-56 truncate font-mono text-[0.62rem] text-lavender" title={refreshNote}>
+            {refreshNote}
+          </span>
+        ) : null}
         <button
-          className="btn btn-accent ml-auto !py-1 text-xs"
+          className="btn btn-ghost ml-auto !px-1.5 !py-1 text-xs"
+          onClick={refreshPrices}
+          disabled={refreshing}
+          title="Atualizar preços agora (o servidor já atualiza sozinho 2× por semana)"
+        >
+          <Icon name="reset" size={11} className={refreshing ? 'animate-spin' : ''} />
+          {refreshing ? 'Atualizando…' : 'Preços'}
+        </button>
+        <button
+          className="btn btn-accent !py-1 text-xs"
           onClick={() => {
             setEditor(empty())
             setScrapeMsg('')
@@ -188,8 +263,17 @@ export default function WishlistSlide() {
               </div>
 
               {it.price && (
-                <div className="font-mono text-sm font-bold text-green">
+                <div className="flex items-baseline gap-1.5 font-mono text-sm font-bold text-green">
                   {it.currency || 'R$'} {it.price}
+                  {it.priceUpdatedAt != null && (
+                    <span
+                      className="flex items-center gap-0.5 text-[0.6rem] font-normal text-overlay0"
+                      title={`Preço confirmado em ${new Date(it.priceUpdatedAt).toLocaleString('pt-BR')}`}
+                    >
+                      <Icon name="reset" size={8} />
+                      {timeAgo(it.priceUpdatedAt)}
+                    </span>
+                  )}
                 </div>
               )}
             </div>

@@ -31,16 +31,26 @@ export default function App() {
   // Boot: detecta o backend e reconcilia com o SQLite.
   useEffect(() => {
     const off = sync.onSyncState(setSyncState)
-    ;(async () => {
-      if (await sync.probe()) {
-        const updated = await sync.pull()
-        if (updated.length) {
-          window.dispatchEvent(new CustomEvent('startpage:pulled', { detail: updated }))
-        }
+    const reconcile = async () => {
+      const updated = await sync.pull()
+      if (updated.length) {
+        window.dispatchEvent(new CustomEvent('startpage:pulled', { detail: updated }))
       }
+    }
+    ;(async () => {
+      if (await sync.probe()) await reconcile()
     })()
+    /**
+     * Pull periódico: sem ele, mudanças feitas NO SERVIDOR (como as rodadas
+     * do vigia de preços da wishlist, 2× por semana) só apareceriam ao
+     * recarregar a aba. Quando nada muda o ETag devolve um 304 barato.
+     */
+    const t = window.setInterval(() => {
+      if (sync.isAvailable()) void reconcile()
+    }, 5 * 60_000)
     return () => {
       off()
+      window.clearInterval(t)
     }
   }, [])
 
